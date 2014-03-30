@@ -8,6 +8,7 @@ import java.util.*;
  * @author Alex Varvel
  * @author Alex McKay
  * @author Jordan Garcia
+ * @author Nicholas Warlen
  * 
  * This class is the centerpiece of a simulation of the essential hardware of a
  * microcomputer.  This includes a processor chip, RAM and I/O devices.  It is
@@ -512,10 +513,13 @@ public class CPU implements Runnable
     	for(;ever; numInstr++) 
     	{
     		checkForIOInterrupt();
+    	
+    		
     		
     		//Fetch the next instruction from RAM
     		int pc = getPC();
     		int[] instr = m_RAM.fetch(pc);
+    		
     		
     		
     		//Increment the PC...if within memory access
@@ -611,6 +615,7 @@ public class CPU implements Runnable
                 break;
     		}
     		
+    		//increment number of ticks and check for clock interrupt
     		this.addTicks(1);
     		if(m_ticks % CLOCK_FREQ == 0) {
     			m_TH.interruptClock();

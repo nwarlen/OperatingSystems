@@ -97,10 +97,6 @@ public class SOS implements CPU.TrapHandler
     		break;
     	}
     }
-    
-    
-     
-
 
     //======================================================================
     //Member variables
@@ -110,7 +106,7 @@ public class SOS implements CPU.TrapHandler
      * This flag causes the SOS to print lots of potentially helpful
      * status messages
      **/
-    public static final boolean m_verbose = false;
+    public static final boolean m_verbose = true;
     
     /**
      * The CPU the operating system is managing.
@@ -264,6 +260,7 @@ public class SOS implements CPU.TrapHandler
      */
     public void removeCurrentProcess()
     {
+    	printProcessTable();
     	debugPrintln("Removing process with process id " + m_currProcess.getProcessId() + " at " + m_CPU.getBASE());
     	m_processes.remove(m_currProcess.getProcessId());
     	scheduleNewProcess();
@@ -277,29 +274,60 @@ public class SOS implements CPU.TrapHandler
      * @return a reference to the ProcessControlBlock struct of the selected process
      * -OR- null if no non-blocked process exists
      */
-    ProcessControlBlock getRandomProcess()
+    public ProcessControlBlock getRandomProcess()
     {
-        //Calculate a random offset into the m_processes list
-    	// TODO: optimize this. right now it works, but isn't pretty.
-        Vector<ProcessControlBlock> nonBlockedProcesess = new Vector<ProcessControlBlock>();
-        //Iterate until a non-blocked process is found
-        for(ProcessControlBlock newProc : m_processes.values())
-        {
-            if (!newProc.isBlocked())
-            {
-                nonBlockedProcesess.add(newProc);
-            }
-        }//for
+    	//get the list of PCB's in m_processes
+    	ArrayList<ProcessControlBlock> m_processesList = new ArrayList<ProcessControlBlock>(m_processes.values());
         
-        // Grab the random process.
-        if(!nonBlockedProcesess.isEmpty())
-        {       
-        	int offset = ((int)(Math.random() * 2147483647)) % nonBlockedProcesess.size();
-        	return nonBlockedProcesess.get(offset);
-        }
+    	//Calculate a random offset into the m_processes list
+    	int offset = ((int)(Math.random() * 2147483647)) % m_processes.values().size();
+    	
+    	
+        ProcessControlBlock newProc = null;
+        
+        for(int i=0; i<m_processes.size(); i++) {
+        	newProc = m_processesList.get((i+ offset) % m_processes.size());
+        	if(! newProc.isBlocked()) {
+        		return newProc;
+        	}
+        }//for
         
         return null;        // no processes are Ready
     }//getRandomProcess
+    
+    /**
+     * getNewProcess()
+     * 
+     * Selects a non-Blocked process according to the max starvation time from the list of processes
+     * 
+     * @return a reference to the ProcessControlBlock object of the selected process
+     * -OR- null if no non-blocked process exists
+     */
+    public ProcessControlBlock getNewProcess() {
+    	//get the list of all processes
+    	ArrayList<ProcessControlBlock> m_processesList = new ArrayList<ProcessControlBlock>(m_processes.values());
+    	
+    	ProcessControlBlock newProcess = null;
+    	double highStarvation = -1.0;
+    	
+    	
+    	if(!m_currProcess.isBlocked() && m_processesList.contains(m_currProcess)) {
+    		newProcess = m_currProcess;
+    		//add buffer to give priority to current process as there is a cost to switching processes
+    		highStarvation = m_currProcess.maxStarve+275;
+    	}
+    	
+    	//choose a process based on the highest max starvation time
+    	ProcessControlBlock temp;
+    	for(int i=0;i<m_processes.size();i++) {
+    		temp = m_processesList.get(i);
+    		if(!temp.isBlocked() && temp.maxStarve >= highStarvation) {
+    			newProcess = temp;
+    			highStarvation = temp.maxStarve;
+    		}
+    	}
+    	return newProcess;
+    }
     
     /**
      * scheduleNewProcess
@@ -309,7 +337,7 @@ public class SOS implements CPU.TrapHandler
      **/
     public void scheduleNewProcess()
     {
-    	printProcessTable();
+    	//printProcessTable();
     	
     	// Exit if there are no more processes
         if(m_processes.isEmpty())
@@ -318,7 +346,7 @@ public class SOS implements CPU.TrapHandler
         	System.exit(0);
         }
         
-    	ProcessControlBlock newProc = getRandomProcess();
+    	ProcessControlBlock newProc = getNewProcess();
     	
     	//All processes are blocked
     	if(newProc == null)
@@ -329,11 +357,13 @@ public class SOS implements CPU.TrapHandler
     	
     	boolean isSame = (newProc.equals(m_currProcess));
     	
-        m_currProcess.save(m_CPU);
-        
-        m_currProcess = newProc;
-        
-        m_currProcess.restore(m_CPU);
+    	if(!isSame) {
+    		m_currProcess.save(m_CPU);
+
+    		m_currProcess = newProc;
+
+    		m_currProcess.restore(m_CPU);
+    	}
         
         if(!isSame)
         {
@@ -577,7 +607,7 @@ public class SOS implements CPU.TrapHandler
 	/**
 	 * interruptClock
 	 * 
-	 * TODO: ADD method header
+	 * On a clock interrupt, schedule a 'new' process
 	 */
 	public void interruptClock() {
 		scheduleNewProcess();
