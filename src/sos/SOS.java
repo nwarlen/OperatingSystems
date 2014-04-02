@@ -106,7 +106,7 @@ public class SOS implements CPU.TrapHandler
      * This flag causes the SOS to print lots of potentially helpful
      * status messages
      **/
-    public static final boolean m_verbose = true;
+    public static final boolean m_verbose = false;
     
     /**
      * The CPU the operating system is managing.
@@ -152,6 +152,20 @@ public class SOS implements CPU.TrapHandler
      **/
     Hashtable<Integer, ProcessControlBlock> m_processes = new Hashtable<Integer, ProcessControlBlock>();
     
+    /**
+     * avgMaxStarve
+     */
+    protected double totalMaxStarve = 0;
+    
+    /**
+     * avgAverageStarve
+     */
+    protected double avgAverageStarve = 0;
+    
+    /**
+     * numProcessesCounted
+     */
+    protected int numProcessesCounted =0;
     /*======================================================================
      * Constructors & Debugging
      *----------------------------------------------------------------------
@@ -248,6 +262,11 @@ public class SOS implements CPU.TrapHandler
         {
             debugPrintln("    " + pi);
         }//for
+        if(numProcessesCounted!=0) {
+        	debugPrintln("Avg Max Starve: " + totalMaxStarve/numProcessesCounted);
+        	debugPrintln("Avg Average Starve: " + avgAverageStarve/numProcessesCounted);
+        	debugPrintln("Avg Ticks: " + m_CPU.getTicks()/numProcessesCounted);
+        }
         debugPrintln("----------------------------------------------------------------------");
 
     }//printProcessTable
@@ -260,8 +279,12 @@ public class SOS implements CPU.TrapHandler
      */
     public void removeCurrentProcess()
     {
+    	
     	printProcessTable();
-    	debugPrintln("Removing process with process id " + m_currProcess.getProcessId() + " at " + m_CPU.getBASE());
+    	System.out.println("Removing process with process id " + m_currProcess.getProcessId() + " at " + m_CPU.getBASE());
+    	totalMaxStarve += m_currProcess.maxStarve;
+    	avgAverageStarve += m_currProcess.avgStarve;
+    	numProcessesCounted++;
     	m_processes.remove(m_currProcess.getProcessId());
     	scheduleNewProcess();
     }//removeCurrentProcess
@@ -329,6 +352,35 @@ public class SOS implements CPU.TrapHandler
     	return newProcess;
     }
     
+    /**
+     * newScheduler from Bobby Stiles
+     * 
+     * 
+     */
+    public ProcessControlBlock getNewProcessTR() {
+    	ArrayList<ProcessControlBlock> m_processesList = new ArrayList<ProcessControlBlock>(m_processes.values());
+
+    	ProcessControlBlock bestNextProc = null;
+        int bestBurstTime = Integer.MAX_VALUE;
+        
+        if(!m_currProcess.isBlocked() && m_processes.contains(m_currProcess))
+        {
+            bestNextProc = m_currProcess;
+            bestBurstTime = m_currProcess.getExpectedBurstLength() + 20;
+        }
+        
+        //Iterate until we find the current process, then return the next one in line
+        for (ProcessControlBlock nextProc : m_processesList)
+        {
+            if(!nextProc.isBlocked() && nextProc.getExpectedBurstLength() < bestBurstTime)
+            {
+                bestNextProc = nextProc;
+                bestBurstTime = nextProc.getExpectedBurstLength();
+            }
+        }
+
+        return bestNextProc;
+    }
     /**
      * scheduleNewProcess
      *
@@ -1047,6 +1099,24 @@ public class SOS implements CPU.TrapHandler
         private double avgStarve = 0;
         
         /**
+         * Used to store the system time when a process is moved to the Running state.
+         */
+        private int lastRunningTime = -1;
+        
+        /**
+         * Record how long the process ran when it was last running
+         */
+        private int lastBurstLength = 0;
+        
+        /**
+         * Make a guess at how long the process will run for next time
+         */
+        private int expectedBurstLength = SAVE_LOAD_TIME;
+        
+        /**
+         * totalS
+         */
+        /**
          * constructor
          *
          * @param pid        a process id for the process.  The caller is
@@ -1136,15 +1206,26 @@ public class SOS implements CPU.TrapHandler
     	}
         
     	/**
-         * save
-         *
-         * saves the current CPU registers into this.registers
-         *
-         * @param cpu  the CPU object to save the values from
+         * @return The expected burst length the next time this process runs
          */
+        public int getExpectedBurstLength() { return expectedBurstLength; }
+        
+        /**
+        * save
+        *
+        * saves the current CPU registers into this.registers
+        *
+        * @param cpu the CPU object to save the values from
+        */
         public void save(CPU cpu)
         {
-            //A context switch is expensive.  We simluate that here by 
+            //Remember how long the process has been running
+            lastBurstLength = m_CPU.getTicks() - lastRunningTime;
+            //Make a guess at how long it will run next time based on how off our previous estimation was
+            if (lastBurstLength != 0)
+                expectedBurstLength = (int)(0.5*expectedBurstLength + 0.5*lastBurstLength);
+            
+            //A context switch is expensive. We simulate that here by
             //adding ticks to m_CPU
             m_CPU.addTicks(SAVE_LOAD_TIME);
             
@@ -1152,50 +1233,45 @@ public class SOS implements CPU.TrapHandler
             int[] regs = cpu.getRegisters();
             this.registers = new int[CPU.NUMREG];
             for(int i = 0; i < CPU.NUMREG; i++)
-            {
                 this.registers[i] = regs[i];
-            }
 
             //Assuming this method is being called because the process is moving
             //out of the Running state, record the current system time for
-            //calculating starve times for this process.  If this method is
-            //being called for a Block, we'll adjust lastReadyTime in the
-            //unblock method.
+            //calculating starve times for this process. If this method is
+            //being called for a Block, we'll adjust lastReadyTime in the unblock method.
             numReady++;
             lastReadyTime = m_CPU.getTicks();
-            
         }//save
          
         /**
-         * restore
-         *
-         * restores the saved values in this.registers to the current CPU's
-         * registers
-         *
-         * @param cpu  the CPU object to restore the values to
-         */
+        * restore
+        *
+        * restores the saved values in this.registers to the current CPU's
+        * registers
+        *
+        * @param cpu the CPU object to restore the values to
+        */
         public void restore(CPU cpu)
         {
-            //A context switch is expensive.  We simluate that here by 
+            //A context switch is expensive. We simulate that here by
             //adding ticks to m_CPU
             m_CPU.addTicks(SAVE_LOAD_TIME);
             
             //Restore the register values
             int[] regs = cpu.getRegisters();
             for(int i = 0; i < CPU.NUMREG; i++)
-            {
                 regs[i] = this.registers[i];
-            }
 
             //Record the starve time statistics
             int starveTime = m_CPU.getTicks() - lastReadyTime;
             if (starveTime > maxStarve)
-            {
                 maxStarve = starveTime;
-            }
-            double d_numReady = (double)numReady;
-            avgStarve = avgStarve * (d_numReady - 1.0) / d_numReady;
-            avgStarve = avgStarve + (starveTime * (1.0 / d_numReady));
+
+            double d_numReady = numReady;
+            avgStarve *= (d_numReady - 1.0) / d_numReady;
+            avgStarve += (starveTime * (1.0 / d_numReady));
+            
+            lastRunningTime = m_CPU.getTicks();
         }//restore
          
         /**
