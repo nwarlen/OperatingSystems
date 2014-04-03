@@ -106,7 +106,7 @@ public class SOS implements CPU.TrapHandler
 	 * This flag causes the SOS to print lots of potentially helpful
 	 * status messages
 	 **/
-	public static final boolean m_verbose = false;
+	public static final boolean m_verbose = true;
 
 	/**
 	 * The CPU the operating system is managing.
@@ -220,7 +220,7 @@ public class SOS implements CPU.TrapHandler
 	private int allocBlock(int size)
 	{
 		//once a location is determined, update free_list
-		
+
 		//this.m_freeList;
 		//public int getAddr() { return m_addr; }
 		//public int getSize() { return m_size; }
@@ -233,27 +233,143 @@ public class SOS implements CPU.TrapHandler
 			}
 			totalFreeSpace+=memBlock.getSize();
 		}
-		
-		//if no single block large enough, but enough total free RAM 
-		if((possibleBlocks.isEmpty()) && (totalFreeSpace > size)) {
-			//move processes around to fit new proc
-			
+
+
+		Vector<ProcessControlBlock> procs = new Vector<ProcessControlBlock>(m_processes.values());
+
+		//sort the procs based on base register
+		if(procs != null && procs.size() > 1 && checkProcs(procs)) {
+			Collections.sort(procs);
 		}
-		
-		//choose block
-		else {
-			
+		if(m_freeList.size() > 1) {
+			Collections.sort(m_freeList);
 		}
-		
+
+		if(totalFreeSpace > size) {
+			//if no single block large enough, but enough total free RAM 
+			if((possibleBlocks.isEmpty()) && (totalFreeSpace > size)) {
+				//move processes around to fit new proc
+				ProcessControlBlock prev = procs.get(0);
+				for(int i=1;i<procs.size();i++) {
+					ProcessControlBlock curr = procs.get(i);
+
+					int prevLim = prev.getRegisterValue(m_CPU.LIM);
+					int currBase = curr.getRegisterValue(m_CPU.BASE);
+
+					//check for free space between the two and compact
+					for(int j=0;j<m_freeList.size();j++) {
+						MemBlock mb = m_freeList.get(j);
+						if(mb.getAddr() > prevLim && mb.getAddr() + mb.getSize() < currBase) {
+							//compact
+							curr.move(mb.getAddr());
+
+							//must update the freeList
+							m_freeList.remove(mb);
+
+							//calc size of new free mem block
+							int newAddr = curr.getRegisterValue(m_CPU.LIM) +1;
+							int newSize=0;
+							if(i != procs.size() -1) {
+								size = procs.get(i+1).getRegisterValue(m_CPU.BASE) - curr.getRegisterValue(m_CPU.LIM);
+							}
+							else {
+								size = m_RAM.getSize() - curr.getRegisterValue(m_CPU.LIM);
+							}
+
+							//add the new memblock to the free list
+							MemBlock newBlock = new MemBlock(newAddr,newSize);
+							m_freeList.add(newBlock);
+
+							break;
+						}
+
+					}//for
+
+					for(int x=0; x< m_freeList.size();x++) {
+						MemBlock memBlock = m_freeList.get(x);
+						if(memBlock.getSize() > size) {
+							//found a block big enough, add to the list of available blocks
+							m_freeList.remove(x);
+							return memBlock.getAddr();
+						}
+					}
+					prev = curr;
+				}//for
+
+			}//if
+			else {
+				//find the smallest block and return
+				//TODO: ADD CHECK IF ONLY ONE PROC IN POSSIBLE
+				int chevySmallBlock = m_RAM.getSize();
+				int returnAddress = 0;
+				MemBlock memBlock = null;
+				for(MemBlock mb : possibleBlocks) {
+					if(mb.getSize() < chevySmallBlock) {
+						chevySmallBlock = mb.getSize();
+						returnAddress = mb.getAddr();
+						memBlock = mb;
+					}
+				}
+				m_freeList.remove(memBlock);
+				return returnAddress;
+			}
+		}//if
+
 		//if not enough ram, return -1
 		return -1;
 	}//allocBlock
 
-	//<insert method header here>
+
+
+	private boolean checkProcs(Vector<ProcessControlBlock> procs) {
+		for(ProcessControlBlock pcb : procs) {
+			if(pcb.registers == null) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * freeCurrProcessMemBlock()
+	 * 
+	 * Modify the m_freeList to account for the removal of the currProcess
+	 */
 	private void freeCurrProcessMemBlock()
 	{
-		//%%%You will implement this method
+		//add the currProcess' space to the freeList and consolidate if necessary
+		if(m_currProcess.registers == null) {
+			return;
+		}
+		int newBase = m_currProcess.getRegisterValue(m_CPU.BASE);
+		int lim = m_currProcess.getRegisterValue(m_CPU.LIM);
 
+
+
+
+		int size = lim - newBase;
+
+		MemBlock newBlock = new MemBlock(newBase,size);
+		m_freeList.add(newBlock);
+
+		Collections.sort(m_freeList);
+
+		MemBlock prev = m_freeList.get(0);
+		for(int i=1;i<m_freeList.size();i++) {
+			MemBlock curr = m_freeList.get(i);
+			int prevLim = prev.getAddr() + prev.getSize();
+			int currBase = curr.getAddr();
+
+			//merge
+			if(currBase - 1 <= prevLim) {
+				prev.m_size = prev.getSize() + curr.getSize();
+				m_freeList.remove(curr);
+			}
+			else{
+				prev = curr;
+			}
+		}
 	}//freeCurrProcessMemBlock
 
 	/**
@@ -275,15 +391,17 @@ public class SOS implements CPU.TrapHandler
 		//Print a header
 		System.out.println("\n----------========== Memory Allocation Table ==========----------");
 
+		Vector<ProcessControlBlock> m_processList = new Vector<ProcessControlBlock>(m_processes.values());
 		//Sort the lists by address
-		Collections.sort(m_processes);
+		Collections.sort(m_processList);
 		Collections.sort(m_freeList);
 
 		//Initialize references to the first entry in each list
 		MemBlock m = null;
 		ProcessControlBlock pi = null;
 		ListIterator<MemBlock> iterFree = m_freeList.listIterator();
-		ListIterator<ProcessControlBlock> iterProc = m_processes.listIterator();
+
+		ListIterator<ProcessControlBlock> iterProc = m_processList.listIterator();
 		if (iterFree.hasNext()) m = iterFree.next();
 		if (iterProc.hasNext()) pi = iterProc.next();
 
@@ -518,7 +636,7 @@ public class SOS implements CPU.TrapHandler
 				15, 0, 0, 0 }; //TRAP
 
 		//Initialize the starting position for this program
-		int nextLoadPos = allocBlock();
+		int nextLoadPos = allocBlock(progArr.length + 20);
 		if(nextLoadPos == -1) {
 			System.out.println("Unable to locate memory block for Idle Process.");
 			System.exit(-1);
@@ -598,15 +716,14 @@ public class SOS implements CPU.TrapHandler
 		m_currProcess = m_processes.get(m_nextProcessID);
 		m_nextProcessID++;
 
-		//After a process is created, call printMemALloc(), this may need to move to the end of the method
-		printMemAlloc();
+		
 
 		// Convert the program to an int list
 		int enlightendProgram[] = prog.export();
 
 
 		//find the next load position using allocBlock()
-		int nextLoadPos = allocBlock();
+		int nextLoadPos = allocBlock(allocSize);
 		if(nextLoadPos == -1) {
 			//report the error via System.out.println and return to the caller without installing
 			//DO NOT HALT THE SIMULATION
@@ -640,7 +757,17 @@ public class SOS implements CPU.TrapHandler
 
 		m_CPU.setPC(base);
 		m_CPU.setSP(limit);
+		if(m_currProcess == null || m_currProcess.getProcessId() == IDLE_PROC_ID) {
+			System.out.println("jsdlhakfjahsdlkjfhalskdjhflakjsdhflkajsdhflkasjdhflkajsdhflkajshdlfkjashdflkajshdlfkjsdhflkajsd");
+		}
+		m_currProcess.registers = new int[m_CPU.NUMREG];
+		m_currProcess.setRegisterValue(m_CPU.BASE, base);
+		m_currProcess.setRegisterValue(m_CPU.LIM, limit);
+		m_currProcess.setRegisterValue(m_CPU.SP, limit);
+		m_currProcess.setRegisterValue(m_CPU.PC, base);
 
+		//After a process is created, call printMemALloc(), this may need to move to the end of the method
+		printMemAlloc();
 		debugPrintln("Installed program of size " + allocSize + " with process id " + m_currProcess.getProcessId() + " at position " + m_CPU.getBASE());
 
 	}//createProcess
@@ -1417,6 +1544,10 @@ public class SOS implements CPU.TrapHandler
 			//ensure new base is a valid address in RAM and the memory to be written over is empty
 			if(newBase > 0 && newLim < m_RAM.getSize()) {
 				if(checkForEmptyMemory(newBase,newLim)) {
+					int cpuBase = m_CPU.getBASE();
+					int cpuLim = m_CPU.getLIM();
+					m_CPU.setBASE(0);
+					m_CPU.setLIM(m_RAM.getSize());
 					int adder =0;
 					for(int i=base;i<=lim;i++,adder++) {
 						//copy process to new location
@@ -1433,13 +1564,7 @@ public class SOS implements CPU.TrapHandler
 					this.setRegisterValue(m_CPU.PC,newPC);
 					this.setRegisterValue(m_CPU.SP,newSP);
 
-					if(isRunning) {
-						//update CPU reg values
-						m_CPU.setBASE(newBase);
-						m_CPU.setLIM(newLim);
-						m_CPU.setPC(newPC);
-						m_CPU.setSP(newSP);
-					}
+					
 
 					//clear old locations
 					for(int i=base;i<=lim;i++) {
@@ -1447,18 +1572,29 @@ public class SOS implements CPU.TrapHandler
 						m_RAM.write(i, 0);
 					}
 					
+					if(isRunning) {
+						//update CPU reg values
+						m_CPU.setBASE(newBase);
+						m_CPU.setLIM(newLim);
+						m_CPU.setPC(newPC);
+						m_CPU.setSP(newSP);
+					}else {
+						m_CPU.setBASE(cpuBase);
+						m_CPU.setLIM(cpuLim);
+					}
+
 					//report success and return
 					debugPrintln("Process " + this.processId + " has moved from " + base +
-								" to " + newBase);
+							" to " + newBase);
 					return true;
 				}//if(chec...
 			}//if(newB...
-			
+
 			return false;
-			
+
 		}//move
 
-		
+
 		/**
 		 * checkForEmptyMemory()
 		 * 
@@ -1470,8 +1606,12 @@ public class SOS implements CPU.TrapHandler
 		 * @return true if empty --OR-- false if not empty
 		 */
 		private boolean checkForEmptyMemory(int base, int lim) {
+			int currBase = this.registers[m_CPU.BASE];
+			int currLim  = this.registers[m_CPU.LIM];
+
 			for(int i=base; i<=lim; ++i) {
-				if(m_RAM.read(i) != 0) {
+				//either the address is empty or a part of the current proc
+				if(m_RAM.read(i) != 0 || ( i > currBase && i < currLim) ) {
 					return false;
 				}
 			}
@@ -1550,77 +1690,77 @@ public class SOS implements CPU.TrapHandler
 		 *
 		 * @return a string representation of this class
 		 */
-		 public String toString()
+		public String toString()
 		{
-			 //Print the Process ID and process state (READY, RUNNING, BLOCKED)
-			 String result = "Process id " + processId + " ";
-			 if (isBlocked())
-			 {
-				 result = result + "is BLOCKED for ";
-				 //Print device, syscall and address that caused the BLOCKED state
-				 if (blockedForOperation == SYSCALL_OPEN)
-				 {
-					 result = result + "OPEN";
-				 }
-				 else
-				 {
-					 result = result + "WRITE @" + blockedForAddr;
-				 }
-				 for(DeviceInfo di : m_devices.values())
-				 {
-					 if (di.getDevice() == blockedForDevice)
-					 {
-						 result = result + " on device #" + di.getId();
-						 break;
-					 }
-				 }
-				 result = result + ": ";
-			 }
-			 else if (this == m_currProcess)
-			 {
-				 result = result + "is RUNNING: ";
-			 }
-			 else
-			 {
-				 result = result + "is READY: ";
-			 }
+			//Print the Process ID and process state (READY, RUNNING, BLOCKED)
+			String result = "Process id " + processId + " ";
+			if (isBlocked())
+			{
+				result = result + "is BLOCKED for ";
+				//Print device, syscall and address that caused the BLOCKED state
+				if (blockedForOperation == SYSCALL_OPEN)
+				{
+					result = result + "OPEN";
+				}
+				else
+				{
+					result = result + "WRITE @" + blockedForAddr;
+				}
+				for(DeviceInfo di : m_devices.values())
+				{
+					if (di.getDevice() == blockedForDevice)
+					{
+						result = result + " on device #" + di.getId();
+						break;
+					}
+				}
+				result = result + ": ";
+			}
+			else if (this == m_currProcess)
+			{
+				result = result + "is RUNNING: ";
+			}
+			else
+			{
+				result = result + "is READY: ";
+			}
 
-			 //Print the register values stored in this object.  These don't
-			 //necessarily match what's on the CPU for a Running process.
-			 if (registers == null)
-			 {
-				 result = result + "<never saved>";
-				 return result;
-			 }
+			//Print the register values stored in this object.  These don't
+			//necessarily match what's on the CPU for a Running process.
+			if (registers == null)
+			{
+				result = result + "<never saved>";
+				return result;
+			}
 
-			 for(int i = 0; i < CPU.NUMGENREG; i++)
-			 {
-				 result = result + ("r" + i + "=" + registers[i] + " ");
-			 }//for
-			 result = result + ("PC=" + registers[CPU.PC] + " ");
-			 result = result + ("SP=" + registers[CPU.SP] + " ");
-			 result = result + ("BASE=" + registers[CPU.BASE] + " ");
-			 result = result + ("LIM=" + registers[CPU.LIM] + " ");
+			for(int i = 0; i < CPU.NUMGENREG; i++)
+			{
+				result = result + ("r" + i + "=" + registers[i] + " ");
+			}//for
+			result = result + ("PC=" + registers[CPU.PC] + " ");
+			result = result + ("SP=" + registers[CPU.SP] + " ");
+			result = result + ("BASE=" + registers[CPU.BASE] + " ");
+			result = result + ("LIM=" + registers[CPU.LIM] + " ");
 
-			 //Print the starve time statistics for this process
-			 result = result + "\n\t\t\t";
-			 result = result + " Max Starve Time: " + maxStarve;
-			 result = result + " Avg Starve Time: " + avgStarve;
+			//Print the starve time statistics for this process
+			result = result + "\n\t\t\t";
+			result = result + " Max Starve Time: " + maxStarve;
+			result = result + " Avg Starve Time: " + avgStarve;
 
-			 return result;
+			return result;
 		}//toString
 
-		 /**
-		  * compareTo              
-		  *
-		  * compares this to another ProcessControlBlock object based on the BASE addr
-		  * register.  Read about Java's Collections class for info on
-		  * how this method can be quite useful to you.
-		  */
-		 public int compareTo(ProcessControlBlock pi)
-		 {
-			 return this.registers[CPU.BASE] - pi.registers[CPU.BASE];
-		 }
+		/**
+		 * compareTo              
+		 *
+		 * compares this to another ProcessControlBlock object based on the BASE addr
+		 * register.  Read about Java's Collections class for info on
+		 * how this method can be quite useful to you.
+		 */
+		public int compareTo(ProcessControlBlock pi)
+		{
+			return this.registers[CPU.BASE] - pi.registers[CPU.BASE];
+		}
 
 	}//class ProcessControlBlock
 
