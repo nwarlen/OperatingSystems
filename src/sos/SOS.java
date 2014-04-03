@@ -209,11 +209,43 @@ public class SOS implements CPU.TrapHandler
 	 *----------------------------------------------------------------------
 	 */
 
-	//<insert method header here>
+	/**
+	 * allocBlock()
+	 * 
+	 * Determine where to load a new process into RAM given its size
+	 * 
+	 * @param size
+	 * @return address of the chunk of memory allocated for the process
+	 */
 	private int allocBlock(int size)
 	{
-		//%%%You will implement this method
-
+		//once a location is determined, update free_list
+		
+		//this.m_freeList;
+		//public int getAddr() { return m_addr; }
+		//public int getSize() { return m_size; }
+		Vector<MemBlock> possibleBlocks = new Vector<MemBlock>();
+		int totalFreeSpace = 0;
+		for(MemBlock memBlock : m_freeList) {
+			if(memBlock.getSize() > size) {
+				//found a block big enough, add to the list of available blocks
+				possibleBlocks.add(memBlock);
+			}
+			totalFreeSpace+=memBlock.getSize();
+		}
+		
+		//if no single block large enough, but enough total free RAM 
+		if((possibleBlocks.isEmpty()) && (totalFreeSpace > size)) {
+			//move processes around to fit new proc
+			
+		}
+		
+		//choose block
+		else {
+			
+		}
+		
+		//if not enough ram, return -1
 		return -1;
 	}//allocBlock
 
@@ -1426,6 +1458,7 @@ public class SOS implements CPU.TrapHandler
 			
 		}//move
 
+		
 		/**
 		 * checkForEmptyMemory()
 		 * 
