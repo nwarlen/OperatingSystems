@@ -219,104 +219,7 @@ public class SOS implements CPU.TrapHandler
 	 */
 	private int allocBlock(int size)
 	{
-		//once a location is determined, update free_list
-
-		//this.m_freeList;
-		//public int getAddr() { return m_addr; }
-		//public int getSize() { return m_size; }
-		Vector<MemBlock> possibleBlocks = new Vector<MemBlock>();
-		int totalFreeSpace = 0;
-		for(MemBlock memBlock : m_freeList) {
-			if(memBlock.getSize() > size) {
-				//found a block big enough, add to the list of available blocks
-				possibleBlocks.add(memBlock);
-			}
-			totalFreeSpace+=memBlock.getSize();
-		}
-
-
-		Vector<ProcessControlBlock> procs = new Vector<ProcessControlBlock>(m_processes.values());
-
-		//sort the procs based on base register
-		if(procs != null && procs.size() > 1 && checkProcs(procs)) {
-			Collections.sort(procs);
-		}
-		if(m_freeList.size() > 1) {
-			Collections.sort(m_freeList);
-		}
-
-		if(totalFreeSpace > size) {
-			//if no single block large enough, but enough total free RAM 
-			if((possibleBlocks.isEmpty()) && (totalFreeSpace > size)) {
-				//move processes around to fit new proc
-				ProcessControlBlock prev = procs.get(0);
-				for(int i=1;i<procs.size();i++) {
-					ProcessControlBlock curr = procs.get(i);
-
-					int prevLim = prev.getRegisterValue(m_CPU.LIM);
-					int currBase = curr.getRegisterValue(m_CPU.BASE);
-
-					//check for free space between the two and compact
-					for(int j=0;j<m_freeList.size();j++) {
-						MemBlock mb = m_freeList.get(j);
-						if(mb.getAddr() > prevLim && mb.getAddr() + mb.getSize() < currBase) {
-							//compact
-							curr.move(mb.getAddr());
-
-							//must update the freeList
-							m_freeList.remove(mb);
-
-							//calc size of new free mem block
-							int newAddr = curr.getRegisterValue(m_CPU.LIM) +1;
-							int newSize=0;
-							if(i != procs.size() -1) {
-								size = procs.get(i+1).getRegisterValue(m_CPU.BASE) - curr.getRegisterValue(m_CPU.LIM);
-							}
-							else {
-								size = m_RAM.getSize() - curr.getRegisterValue(m_CPU.LIM);
-							}
-
-							//add the new memblock to the free list
-							MemBlock newBlock = new MemBlock(newAddr,newSize);
-							m_freeList.add(newBlock);
-
-							break;
-						}
-
-					}//for
-
-					for(int x=0; x< m_freeList.size();x++) {
-						MemBlock memBlock = m_freeList.get(x);
-						if(memBlock.getSize() > size) {
-							//found a block big enough, add to the list of available blocks
-							m_freeList.remove(x);
-							return memBlock.getAddr();
-						}
-					}
-					prev = curr;
-				}//for
-
-			}//if
-			else {
-				//find the smallest block and return
-				//TODO: ADD CHECK IF ONLY ONE PROC IN POSSIBLE
-				int chevySmallBlock = m_RAM.getSize();
-				int returnAddress = 0;
-				MemBlock memBlock = null;
-				for(MemBlock mb : possibleBlocks) {
-					if(mb.getSize() < chevySmallBlock) {
-						chevySmallBlock = mb.getSize();
-						returnAddress = mb.getAddr();
-						memBlock = mb;
-					}
-				}
-				m_freeList.remove(memBlock);
-				return returnAddress;
-			}
-		}//if
-
-		//if not enough ram, return -1
-		return -1;
+		
 	}//allocBlock
 
 
@@ -641,6 +544,7 @@ public class SOS implements CPU.TrapHandler
 			System.out.println("Unable to locate memory block for Idle Process.");
 			System.exit(-1);
 		}
+		
 		int baseAddr = nextLoadPos;
 
 		//Load the program into RAM
@@ -724,12 +628,14 @@ public class SOS implements CPU.TrapHandler
 
 		//find the next load position using allocBlock()
 		int nextLoadPos = allocBlock(allocSize);
+		
 		if(nextLoadPos == -1) {
 			//report the error via System.out.println and return to the caller without installing
 			//DO NOT HALT THE SIMULATION
 			System.out.println("Unable to locate a block of memory for the new process.");
 			return;
 		}
+		
 		// Tell the CPU where the program is
 		m_CPU.setBASE(nextLoadPos);
 		m_CPU.setLIM(m_CPU.getBASE() + allocSize);
@@ -757,14 +663,9 @@ public class SOS implements CPU.TrapHandler
 
 		m_CPU.setPC(base);
 		m_CPU.setSP(limit);
-		if(m_currProcess == null || m_currProcess.getProcessId() == IDLE_PROC_ID) {
-			System.out.println("jsdlhakfjahsdlkjfhalskdjhflakjsdhflkajsdhflkasjdhflkajsdhflkajshdlfkjashdflkajshdlfkjsdhflkajsd");
-		}
-		m_currProcess.registers = new int[m_CPU.NUMREG];
-		m_currProcess.setRegisterValue(m_CPU.BASE, base);
-		m_currProcess.setRegisterValue(m_CPU.LIM, limit);
-		m_currProcess.setRegisterValue(m_CPU.SP, limit);
-		m_currProcess.setRegisterValue(m_CPU.PC, base);
+		
+		//save the CPU registers to the curr process so that they can be used by printMemAlloc
+		m_currProcess.save(m_CPU);
 
 		//After a process is created, call printMemALloc(), this may need to move to the end of the method
 		printMemAlloc();
@@ -1541,13 +1442,18 @@ public class SOS implements CPU.TrapHandler
 			int lim = currentPCBRegisters[m_CPU.LIM];
 
 			int newLim = newBase + (lim-base);
-			//ensure new base is a valid address in RAM and the memory to be written over is empty
+			
+			//ensure new base is a valid address in RAM and the memory to be written over is empty or allocd for this proc
 			if(newBase > 0 && newLim < m_RAM.getSize()) {
 				if(checkForEmptyMemory(newBase,newLim)) {
+					//save current cpu registers
 					int cpuBase = m_CPU.getBASE();
 					int cpuLim = m_CPU.getLIM();
+					
+					//set cpu base and lim to extreme values to allow full access to RAM
 					m_CPU.setBASE(0);
 					m_CPU.setLIM(m_RAM.getSize());
+					
 					int adder =0;
 					for(int i=base;i<=lim;i++,adder++) {
 						//copy process to new location
@@ -1566,11 +1472,21 @@ public class SOS implements CPU.TrapHandler
 
 					
 
-					//clear old locations
-					for(int i=base;i<=lim;i++) {
+					//clear old locations if necessary
+					for(int i=newLim;i<=lim;i++) {
 						//write 0 to all old locations occupied by the process
 						m_RAM.write(i, 0);
 					}
+					int nextBase = -1;
+					for(int i = newLim;i<m_RAM.getSize();i++) {
+						if(m_RAM.read(i) != 0) {
+							nextBase=i;
+						}
+							
+					}
+					MemBlock newFreeBlock = new MemBlock(newLim,nextBase-newLim);
+					m_freeList.add(newFreeBlock);
+					
 					
 					if(isRunning) {
 						//update CPU reg values
