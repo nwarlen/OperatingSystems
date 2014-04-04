@@ -219,7 +219,83 @@ public class SOS implements CPU.TrapHandler
 	 */
 	private int allocBlock(int size)
 	{
-		
+		//when we use move, only do so in defrag
+		//then we can clear the freeList after all procs are in contiguous mem
+
+		Collections.sort(m_freeList);
+
+		Vector<MemBlock> possibleBlocks = new Vector<MemBlock>();
+
+		//check to see if any of the free blocks can contain the new proc
+		//for(MemBlock mb : m_freeList) {
+		for(int i=0;i<m_freeList.size();i++) {	
+			MemBlock mb = m_freeList.get(i);
+			if(mb.getSize() >= size) {
+				possibleBlocks.add(mb);
+			}
+		}
+
+		//must check to see if compacting memory will yield enough space
+		int totalFreeMemory =0;
+		for(MemBlock mb : m_freeList) {
+			totalFreeMemory+=mb.getSize();
+		}
+
+		if(totalFreeMemory > size) {
+			if(!possibleBlocks.isEmpty()) {//big enough blocks available, no defrag needed
+				int smallestBlock= m_RAM.getSize();
+				int smallestAddr=0;
+				MemBlock memBlock = null;
+				boolean happened = false;
+				//for(MemBlock mb : possibleBlocks) {
+				for(int i=0;i<possibleBlocks.size();i++) {
+					MemBlock mb = possibleBlocks.get(i);
+					if(mb.getSize() <= smallestBlock) {
+						smallestAddr=mb.getAddr();
+						memBlock = mb;
+						happened=true;
+					}
+				}
+				//remove the allocd space from freeList and return
+				if(m_freeList.size() == 1 && happened) {
+					//only one free space, update it
+					MemBlock newFreeArea = new MemBlock(memBlock.getAddr() +size, m_RAM.getSize() - (memBlock.getAddr() +size));
+					m_freeList.add(newFreeArea);
+				}
+				//add chunk of memory from end of new allocd space to next process' base
+				m_freeList.remove(memBlock);
+				return smallestAddr;
+			}
+			else { //enough ram but must defrag
+				Vector<ProcessControlBlock> procs = new Vector<ProcessControlBlock>(m_processes.values());
+				if(procs.size() > 1) {
+					Collections.sort(procs);
+				}
+				
+				int properAddress =0;
+				ProcessControlBlock currentProc = procs.get(0);
+				for(int i=0;i<procs.size();i++) {
+					currentProc = procs.get(i);
+					if(currentProc.getRegisterValue(m_CPU.BASE) != properAddress) {
+						//move the process to the properAddress
+						currentProc.move(properAddress);
+					}
+					properAddress=currentProc.getRegisterValue(m_CPU.LIM);
+				}
+				//memory compacted so now remove all of the blocks in free list and replace with single block
+				m_freeList.clear();
+				int newBase = currentProc.getRegisterValue(m_CPU.LIM);
+				if(newBase + size < m_RAM.getSize()) {
+					MemBlock newFreeArea = new MemBlock(newBase+size,m_RAM.getSize() -(newBase+size));
+					m_freeList.add(newFreeArea);
+				}
+				return newBase;
+			}
+		}
+		else {
+			//Statement should be reached only if there is not enough memory for the proc
+			return -1;
+		}
 	}//allocBlock
 
 
@@ -242,13 +318,9 @@ public class SOS implements CPU.TrapHandler
 	private void freeCurrProcessMemBlock()
 	{
 		//add the currProcess' space to the freeList and consolidate if necessary
-		if(m_currProcess.registers == null) {
-			return;
-		}
+		
 		int newBase = m_currProcess.getRegisterValue(m_CPU.BASE);
 		int lim = m_currProcess.getRegisterValue(m_CPU.LIM);
-
-
 
 
 		int size = lim - newBase;
@@ -544,7 +616,7 @@ public class SOS implements CPU.TrapHandler
 			System.out.println("Unable to locate memory block for Idle Process.");
 			System.exit(-1);
 		}
-		
+
 		int baseAddr = nextLoadPos;
 
 		//Load the program into RAM
@@ -620,7 +692,7 @@ public class SOS implements CPU.TrapHandler
 		m_currProcess = m_processes.get(m_nextProcessID);
 		m_nextProcessID++;
 
-		
+
 
 		// Convert the program to an int list
 		int enlightendProgram[] = prog.export();
@@ -628,14 +700,14 @@ public class SOS implements CPU.TrapHandler
 
 		//find the next load position using allocBlock()
 		int nextLoadPos = allocBlock(allocSize);
-		
+
 		if(nextLoadPos == -1) {
 			//report the error via System.out.println and return to the caller without installing
 			//DO NOT HALT THE SIMULATION
 			System.out.println("Unable to locate a block of memory for the new process.");
 			return;
 		}
-		
+
 		// Tell the CPU where the program is
 		m_CPU.setBASE(nextLoadPos);
 		m_CPU.setLIM(m_CPU.getBASE() + allocSize);
@@ -663,7 +735,7 @@ public class SOS implements CPU.TrapHandler
 
 		m_CPU.setPC(base);
 		m_CPU.setSP(limit);
-		
+
 		//save the CPU registers to the curr process so that they can be used by printMemAlloc
 		m_currProcess.save(m_CPU);
 
@@ -1442,68 +1514,50 @@ public class SOS implements CPU.TrapHandler
 			int lim = currentPCBRegisters[m_CPU.LIM];
 
 			int newLim = newBase + (lim-base);
-			
-			//ensure new base is a valid address in RAM and the memory to be written over is empty or allocd for this proc
+
+			//ensure new base is a valid address in RAM 
 			if(newBase > 0 && newLim < m_RAM.getSize()) {
-				if(checkForEmptyMemory(newBase,newLim)) {
-					//save current cpu registers
-					int cpuBase = m_CPU.getBASE();
-					int cpuLim = m_CPU.getLIM();
-					
-					//set cpu base and lim to extreme values to allow full access to RAM
-					m_CPU.setBASE(0);
-					m_CPU.setLIM(m_RAM.getSize());
-					
-					int adder =0;
-					for(int i=base;i<=lim;i++,adder++) {
-						//copy process to new location
-						int valueToWrite = m_RAM.read(i);
-						m_RAM.write(newBase+adder, valueToWrite);
-					}
 
-					//update reg values
-					int newPC = (currentPCBRegisters[m_CPU.PC]- base) + newBase;
-					int newSP = newLim - (lim - currentPCBRegisters[m_CPU.SP]);
+				//save current cpu registers
+				int cpuBase = m_CPU.getBASE();
+				int cpuLim = m_CPU.getLIM();
 
-					this.setRegisterValue(m_CPU.BASE, newBase);
-					this.setRegisterValue(m_CPU.LIM,newLim);
-					this.setRegisterValue(m_CPU.PC,newPC);
-					this.setRegisterValue(m_CPU.SP,newSP);
+				//set cpu base and lim to extreme values to allow full access to RAM
+				m_CPU.setBASE(0);
+				m_CPU.setLIM(m_RAM.getSize());
 
-					
+				int adder =0;
+				for(int i=base;i<=lim;i++,adder++) {
+					//copy process to new location
+					int valueToWrite = m_RAM.read(i);
+					m_RAM.write(newBase+adder, valueToWrite);
+				}
 
-					//clear old locations if necessary
-					for(int i=newLim;i<=lim;i++) {
-						//write 0 to all old locations occupied by the process
-						m_RAM.write(i, 0);
-					}
-					int nextBase = -1;
-					for(int i = newLim;i<m_RAM.getSize();i++) {
-						if(m_RAM.read(i) != 0) {
-							nextBase=i;
-						}
-							
-					}
-					MemBlock newFreeBlock = new MemBlock(newLim,nextBase-newLim);
-					m_freeList.add(newFreeBlock);
-					
-					
-					if(isRunning) {
-						//update CPU reg values
-						m_CPU.setBASE(newBase);
-						m_CPU.setLIM(newLim);
-						m_CPU.setPC(newPC);
-						m_CPU.setSP(newSP);
-					}else {
-						m_CPU.setBASE(cpuBase);
-						m_CPU.setLIM(cpuLim);
-					}
+				//update reg values
+				int newPC = (currentPCBRegisters[m_CPU.PC]- base) + newBase;
+				int newSP = newLim - (lim - currentPCBRegisters[m_CPU.SP]);
 
-					//report success and return
-					debugPrintln("Process " + this.processId + " has moved from " + base +
-							" to " + newBase);
-					return true;
-				}//if(chec...
+				this.setRegisterValue(m_CPU.BASE, newBase);
+				this.setRegisterValue(m_CPU.LIM,newLim);
+				this.setRegisterValue(m_CPU.PC,newPC);
+				this.setRegisterValue(m_CPU.SP,newSP);
+
+				if(isRunning) {
+					//update CPU reg values
+					m_CPU.setBASE(newBase);
+					m_CPU.setLIM(newLim);
+					m_CPU.setPC(newPC);
+					m_CPU.setSP(newSP);
+				}else {
+					m_CPU.setBASE(cpuBase);
+					m_CPU.setLIM(cpuLim);
+				}
+
+				//report success and return
+				debugPrintln("Process " + this.processId + " has moved from " + base +
+						" to " + newBase);
+				return true;
+
 			}//if(newB...
 
 			return false;
