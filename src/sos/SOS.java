@@ -155,6 +155,15 @@ public class SOS implements CPU.TrapHandler
 	 */
 	protected Vector<MemBlock> m_freeList = null;
 	
+	/**
+	 * Memory Management Unit
+	 */
+	private MMU m_MMU = null;
+	
+	/**
+	 * Page Table Limit Location
+	 */
+	private int m_pageTableLim = 0;
 	/*======================================================================
 	 * Constructors & Debugging
 	 *----------------------------------------------------------------------
@@ -163,19 +172,24 @@ public class SOS implements CPU.TrapHandler
 	/**
 	 * The constructor does nothing special
 	 */
-	public SOS(CPU c, RAM r)
+	public SOS(CPU c, RAM r, MMU mmu)
 	{
 		//Initialize member list
 		m_CPU = c;
 		m_RAM = r;
+		m_MMU = mmu;
 		m_devices = new Hashtable<Integer, DeviceInfo>(0);
 
 		// Deal with TRAP
 		m_CPU.registerTrapHandler(this);
 		m_freeList = new Vector<MemBlock>();
-		MemBlock totalRAM = new MemBlock(0,m_RAM.getSize());
+		initPageTable();
+		//must calculate the size of the free memory
+		int sizeOfFreeSpace = m_MMU.getSize() - m_MMU.getNumPages();
+		int startingLocation = m_MMU.getNumPages();
+		m_pageTableLim = startingLocation;
+		MemBlock totalRAM = new MemBlock(startingLocation,sizeOfFreeSpace);
 		m_freeList.add(totalRAM);
-
 	}//SOS ctor
 
 	/**
@@ -257,7 +271,7 @@ public class SOS implements CPU.TrapHandler
 
 		Collections.sort(procs);
 
-		int topOfAllocdSpace = 0;
+		int topOfAllocdSpace = m_pageTableLim;
 		for(ProcessControlBlock pcb : procs) {
 			int processSize = pcb.getRegisterValue(m_CPU.LIM) - pcb.getRegisterValue(m_CPU.BASE);
 
@@ -266,7 +280,7 @@ public class SOS implements CPU.TrapHandler
 		}
 
 		m_freeList.clear();
-		MemBlock newFreeBlock = new MemBlock(topOfAllocdSpace,m_RAM.getSize() - topOfAllocdSpace);
+		MemBlock newFreeBlock = new MemBlock(topOfAllocdSpace,m_MMU.getSize() - topOfAllocdSpace);
 		m_freeList.add(newFreeBlock);
 
 		//didn't find a block, but now memory is cleaned up so run until a block is found
@@ -317,89 +331,164 @@ public class SOS implements CPU.TrapHandler
 		mergeFreeMemory();
 	}//freeCurrProcessMemBlock
 
-	/**
-	 * printMemAlloc                 *DEBUGGING*
-	 *
-	 * outputs the contents of m_freeList and m_processes to the console and
-	 * performs a fragmentation analysis.  It also prints the value in
-	 * RAM at the BASE and LIMIT registers.  This is useful for
-	 * tracking down errors related to moving process in RAM.
-	 *
-	 * SIDE EFFECT:  The contents of m_freeList and m_processes are sorted.
-	 *
-	 */
-	private void printMemAlloc()
-	{
-		//If verbose mode is off, do nothing
-		if (!m_verbose) return;
+	 /**
+     * printMemAlloc                 *DEBUGGING*
+     *
+     * outputs the contents of m_freeList and m_processes to the console and
+     * performs a fragmentation analysis.  It also prints the value in
+     * RAM at the BASE and LIMIT registers.  This is useful for
+     * tracking down errors related to moving process in RAM.
+     *
+     * SIDE EFFECT:  The contents of m_freeList and m_processes are sorted.
+     *
+     */
+    private void printMemAlloc()
+    {
+        //If verbose mode is off, do nothing
+        if (!m_verbose) return;
 
-		//Print a header
-		System.out.println("\n----------========== Memory Allocation Table ==========----------");
+        //Print a header
+        System.out.println("\n----------========== Memory Allocation Table ==========----------");
+        
+        //Sort the lists by address
+        ArrayList<ProcessControlBlock> processList = new ArrayList<ProcessControlBlock>(m_processes.values());
+        Collections.sort(processList);
+        Collections.sort(m_freeList);
 
-		Vector<ProcessControlBlock> m_processList = new Vector<ProcessControlBlock>(m_processes.values());
-		//Sort the lists by address
-		Collections.sort(m_processList);
-		Collections.sort(m_freeList);
+        //Initialize references to the first entry in each list
+        MemBlock m = null;
+        ProcessControlBlock pi = null;
+        ListIterator<MemBlock> iterFree = m_freeList.listIterator();
+        ListIterator<ProcessControlBlock> iterProc = processList.listIterator();
+        if (iterFree.hasNext()) m = iterFree.next();
+        if (iterProc.hasNext()) pi = iterProc.next();
 
-		//Initialize references to the first entry in each list
-		MemBlock m = null;
-		ProcessControlBlock pi = null;
-		ListIterator<MemBlock> iterFree = m_freeList.listIterator();
+        //Loop over both lists in order of their address until we run out of
+        //entries in both lists
+        while ((pi != null) || (m != null))
+        {
+            //Figure out the address of pi and m.  If either is null, then assign
+            //them an address equivalent to +infinity
+            int pAddr = Integer.MAX_VALUE;
+            int mAddr = Integer.MAX_VALUE;
+            if (pi != null)  pAddr = pi.getRegisterValue(CPU.BASE);
+            if (m != null)  mAddr = m.getAddr();
 
-		ListIterator<ProcessControlBlock> iterProc = m_processList.listIterator();
-		if (iterFree.hasNext()) m = iterFree.next();
-		if (iterProc.hasNext()) pi = iterProc.next();
+            //If the process has the lowest address then print it and get the
+            //next process
+            if ( mAddr > pAddr )
+            {
+                int size = pi.getRegisterValue(CPU.LIM) - pi.getRegisterValue(CPU.BASE);
+                System.out.print(" Process " + pi.processId +  " (addr=" + pAddr + " size=" + size + " words");
+                System.out.print(" / " + (size / m_MMU.getPageSize()) + " pages)" );
+                System.out.print(" @BASE=" + m_MMU.read(pi.getRegisterValue(CPU.BASE))
+                                 + " @SP=" + m_MMU.read(pi.getRegisterValue(CPU.SP)));
+                System.out.println();
+                if (iterProc.hasNext())
+                {
+                    pi = iterProc.next();
+                }
+                else
+                {
+                    pi = null;
+                }
+            }//if
+            else
+            {
+                //The free memory block has the lowest address so print it and
+                //get the next free memory block
+                System.out.println("    Open(addr=" + mAddr + " size=" + m.getSize() + ")");
+                if (iterFree.hasNext())
+                {
+                    m = iterFree.next();
+                }
+                else
+                {
+                    m = null;
+                }
+            }//else
+        }//while
+            
+        //Print a footer
+        System.out.println("-----------------------------------------------------------------");
+        
+    }//printMemAlloc
+    
+	
+    /*======================================================================
+     * Virtual Memory Methods
+     *----------------------------------------------------------------------
+     */
 
-		//Loop over both lists in order of their address until we run out of
-		//entries in both lists
-		while ((pi != null) || (m != null))
-		{
-			//Figure out the address of pi and m.  If either is null, then assign
-			//them an address equivalent to +infinity
-			int pAddr = Integer.MAX_VALUE;
-			int mAddr = Integer.MAX_VALUE;
-			if (pi != null)  pAddr = pi.getRegisterValue(CPU.BASE);
-			if (m != null)  mAddr = m.getAddr();
+    //<Method Header Needed>
+    private void initPageTable()
+    {
+        //get number of pages and number of frames from m_mmu
+    	int numPages = m_MMU.getNumPages();
+    	for(int i=0;i<numPages;i++) {
+    		m_RAM.write(i, i);
+    	}
+    }//initPageTable
 
-			//If the process has the lowest address then print it and get the
-			//next process
-			if ( mAddr > pAddr )
-			{
-				int size = pi.getRegisterValue(CPU.LIM) - pi.getRegisterValue(CPU.BASE);
-				System.out.print(" Process " + pi.processId +  " (addr=" + pAddr + " size=" + size + " words)");
-				System.out.print(" @BASE=" + m_RAM.read(pi.getRegisterValue(CPU.BASE))
-						+ " @SP=" + m_RAM.read(pi.getRegisterValue(CPU.SP)));
-				System.out.println();
-				if (iterProc.hasNext())
-				{
-					pi = iterProc.next();
-				}
-				else
-				{
-					pi = null;
-				}
-			}//if
-			else
-			{
-				//The free memory block has the lowest address so print it and
-				//get the next free memory block
-				System.out.println("    Open(addr=" + mAddr + " size=" + m.getSize() + ")");
-				if (iterFree.hasNext())
-				{
-					m = iterFree.next();
-				}
-				else
-				{
-					m = null;
-				}
-			}//else
-		}//while
 
-		//Print a footer
-		System.out.println("-----------------------------------------------------------------");
+    /**
+     * createPageTableEntry
+     *
+     * is a helper method for {@link #printPageTable} to create a single entry
+     * in the page table to print to the console.  This entry is formatted to be
+     * exactly 35 characters wide by appending spaces.
+     *
+     * @param pageNum is the page to print an entry for
+     *
+     */
+    private String createPageTableEntry(int pageNum)
+    {
+        int frameNum = m_RAM.read(pageNum);
+        int baseAddr = frameNum * m_MMU.getPageSize();
 
-	}//printMemAlloc
+        //check to see if student has pre-shifted frame numbers
+        //in their page table and, if so, correct the values
+        if (frameNum / m_MMU.getPageSize() != 0)
+        {
+            baseAddr = frameNum;
+            frameNum /= m_MMU.getPageSize();
+        }
 
+        String entry = "page " + pageNum + "-->frame "
+                          + frameNum + " (@" + baseAddr +")";
+
+        //pad out to 35 characters
+        String format = "%s%" + (35 - entry.length()) + "s";
+        return String.format(format, entry, " ");
+        
+    }//createPageTableEntry
+
+    /**
+     * printPageTable      *DEBUGGING*
+     *
+     * prints the page table in a human readable format
+     *
+     */
+    private void printPageTable()
+    {
+        //If verbose mode is off, do nothing
+        if (!m_verbose) return;
+
+        //Print a header
+        System.out.println("\n----------========== Page Table ==========----------");
+
+        //Print the entries in two columns
+        for(int i = 0; i < m_MMU.getNumPages() / 2; i++)
+        {
+            String line = createPageTableEntry(i);                       //left column
+            line += createPageTableEntry(i + (m_MMU.getNumPages() / 2)); //right column
+            System.out.println(line);
+        }
+        
+        //Print a footer
+        System.out.println("-----------------------------------------------------------------");
+        
+    }//printPageTable
 	/*======================================================================
 	 * Device Management Methods
 	 *----------------------------------------------------------------------
@@ -590,7 +679,7 @@ public class SOS implements CPU.TrapHandler
 		//Load the program into RAM
 		for(int i = 0; i < progArr.length; i++)
 		{
-			m_RAM.write(baseAddr + i, progArr[i]);
+			m_MMU.write(baseAddr + i, progArr[i]);
 		}
 
 		//Save the register info from the current process (if there is one)
@@ -651,9 +740,21 @@ public class SOS implements CPU.TrapHandler
 		// Convert the program to an int list
 		int enlightendProgram[] = prog.export();
 
-
+		//convert allocSize to be a multiple of page size
+		int sizeToAlloc = 0;
+		int numPagesNeeded=0;
+		double numPagesRequired = allocSize/m_MMU.getPageSize();
+		numPagesNeeded = (int)numPagesRequired;
+		
+		if(numPagesRequired % 1 != 0) {
+			// need to go up one more page
+			numPagesNeeded++;
+		}
+		
+		sizeToAlloc = numPagesNeeded * m_MMU.getPageSize();
+		
 		//find the next load position using allocBlock()
-		int nextLoadPos = allocBlock(allocSize);
+		int nextLoadPos = allocBlock(sizeToAlloc);
 
 		if(nextLoadPos == -1) {
 			//report the error via System.out.println and return to the caller without installing
@@ -665,7 +766,7 @@ public class SOS implements CPU.TrapHandler
 
 		// Tell the CPU where the program is
 		m_CPU.setBASE(nextLoadPos);
-		m_CPU.setLIM(m_CPU.getBASE() + allocSize);
+		m_CPU.setLIM(m_CPU.getBASE() + sizeToAlloc);
 		m_CPU.setPC(m_CPU.getBASE());
 		m_CPU.setSP(m_CPU.getLIM());
 
@@ -674,7 +775,7 @@ public class SOS implements CPU.TrapHandler
 		int base = m_CPU.getBASE();
 		int limit = m_CPU.getLIM();
 
-		if(m_CPU.getLIM() >= m_RAM.getSize())
+		if(m_CPU.getLIM() >= m_MMU.getSize())
 		{
 			System.out.println("Error: Program too large. Please allocate more memory. ");
 			System.exit(0);
@@ -683,7 +784,7 @@ public class SOS implements CPU.TrapHandler
 		// Load the program into simulated RAM
 		for(int i = 0; i < enlightendProgram.length; i++)
 		{
-			m_RAM.write(i + base, enlightendProgram[i]);
+			m_MMU.write(i + base, enlightendProgram[i]);
 		}
 
 		//Add the new process's PCB to m_processes
@@ -697,7 +798,7 @@ public class SOS implements CPU.TrapHandler
 		printMemAlloc();
 		
 		m_nextProcessID++;
-		debugPrintln("Installed program of size " + allocSize + " with process id " + m_currProcess.getProcessId() + " at position " + m_CPU.getBASE());
+		debugPrintln("Installed program of size " + sizeToAlloc + " with process id " + m_currProcess.getProcessId() + " at position " + m_CPU.getBASE());
 
 	}//createProcess
 
@@ -1336,7 +1437,7 @@ public class SOS implements CPU.TrapHandler
 				return;
 			}
 			int sp = getRegisterValue(m_CPU.SP) - 1;
-			m_RAM.write(sp, value);
+			m_MMU.write(sp, value);
 			setRegisterValue(m_CPU.SP, sp);
 		}
 
@@ -1473,15 +1574,34 @@ public class SOS implements CPU.TrapHandler
 			int delta = newBase - base;
 
 			//check for illegal memory access
-			if((newBase < 0) || ((lim+delta) > m_RAM.getSize())) {
+			if((newBase < 0) || ((lim+delta) > m_MMU.getSize())) {
 				return false;
 			}
 
+			//------------------------------------------------------------------------//
 			//move the data
-			for(int i= base;i<lim;i++) {
-				m_RAM.write(delta+i, m_RAM.read(i));
+			//for(int i= base;i<lim;i++) {
+			//	m_MMU.write(delta+i, m_MMU.read(i));
+			//}
+            //-------------------------------------------------------------------------//
+			
+			//find the page of the current process
+			int lowestPageNumber = base / m_MMU.getPageSize();
+			
+			//find the page we want to move to
+			int newLowPage = newBase / m_MMU.getPageSize();
+			
+			//find how many pages the process takes up
+			int numberOfPages = (lim- base) / m_MMU.getPageSize();
+			
+			for(int i=0; i<numberOfPages;i++) {
+				int oldPageVal = m_MMU.read(lowestPageNumber + i);
+				int newPageVal = m_MMU.read(newLowPage + i);
+				
+				m_RAM.write(newLowPage+i, oldPageVal);
+				m_RAM.write(lowestPageNumber +i, newPageVal);
 			}
-
+			
 			//reset the register values to acount for the move
 			this.registers[m_CPU.BASE] += delta;
 			this.registers[m_CPU.LIM] += delta;
@@ -1514,7 +1634,7 @@ public class SOS implements CPU.TrapHandler
 
 			for(int i=base; i<=lim; ++i) {
 				//either the address is empty or a part of the current proc
-				if(m_RAM.read(i) != 0 || ( i > currBase && i < currLim) ) {
+				if(m_MMU.read(i) != 0 || ( i > currBase && i < currLim) ) {
 					return false;
 				}
 			}

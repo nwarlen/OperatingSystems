@@ -90,6 +90,11 @@ public class CPU implements Runnable
      * Number of ticks
      */
     private int m_ticks = 0;
+    
+    /**
+     * Memory Management Unit
+     */
+    private MMU m_MMU = null;
     //======================================================================
     //Callback Interface
     //----------------------------------------------------------------------
@@ -129,6 +134,7 @@ public class CPU implements Runnable
      */
     public void registerTrapHandler(TrapHandler th)
     {
+    	m_MMU.registerTrapHandler(th);
         m_TH = th;
     }
     
@@ -144,7 +150,7 @@ public class CPU implements Runnable
      *
      * Intializes all member variables.
      */
-    public CPU(RAM ram, InterruptController ic)
+    public CPU(RAM ram, InterruptController ic,MMU mmu)
     {
         m_registers = new int[NUMREG];
         for(int i = 0; i < NUMREG; i++)
@@ -153,6 +159,7 @@ public class CPU implements Runnable
         }
         m_RAM = ram;
         m_IC = ic;
+        m_MMU =mmu;
 
     }//CPU ctor
 
@@ -477,7 +484,7 @@ public class CPU implements Runnable
     	if(checkAccess(sp))
 		{
     		setSP(sp - 1);
-    		m_RAM.write(getSP(), value);
+    		m_MMU.write(getSP(), value);
 		}
     }
     
@@ -493,7 +500,7 @@ public class CPU implements Runnable
     {
     	if(checkAccess(getSP()))
 		{
-    		int rtn =  m_RAM.read(getSP());
+    		int rtn =  m_MMU.read(getSP());
     		setSP(getSP() + 1);
     		return rtn;
 		}
@@ -518,7 +525,7 @@ public class CPU implements Runnable
     		
     		//Fetch the next instruction from RAM
     		int pc = getPC();
-    		int[] instr = m_RAM.fetch(pc);
+    		int[] instr = m_MMU.fetch(pc);
     		
     		
     		
@@ -601,11 +608,11 @@ public class CPU implements Runnable
     			break;
     		case LOAD:
     			checkAccess(m_registers[instr[2]] + getBASE());
-    			m_registers[instr[1]] = m_RAM.read(m_registers[instr[2]] + getBASE());
+    			m_registers[instr[1]] = m_MMU.read(m_registers[instr[2]] + getBASE());
                 break;
             case SAVE:
             	checkAccess(m_registers[instr[2]] + getBASE());
-            	m_RAM.write(m_registers[instr[2]] + getBASE(), m_registers[instr[1]]);
+            	m_MMU.write(m_registers[instr[2]] + getBASE(), m_registers[instr[1]]);
                 break;
             case TRAP:
             	m_TH.systemCall();
