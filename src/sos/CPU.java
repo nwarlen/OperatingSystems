@@ -9,6 +9,8 @@ import java.util.*;
  * @author Alex McKay
  * @author Jordan Garcia
  * @author Nicholas Warlen
+ * @author Connor Lang
+ * @author Nate Roddy
  * 
  * This class is the centerpiece of a simulation of the essential hardware of a
  * microcomputer.  This includes a processor chip, RAM and I/O devices.  It is
@@ -67,7 +69,7 @@ public class CPU implements Runnable
     /**
      * specifies whether the CPU should output details of its work
      **/
-    private boolean m_verbose = true;
+    private boolean m_verbose = false;
 
     /**
      * This array contains all the registers on the "chip".

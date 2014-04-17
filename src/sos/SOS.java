@@ -11,6 +11,7 @@ import java.util.*;
  * @author Jordan Garcia
  * @author Nicholas Warlen
  * @author Connor Lang
+ * @author Nate Roddy
  * 
  * This class contains the simulated operating system (SOS).  Realistically it
  * would run on the same processor (CPU) that it is managing but instead it uses
@@ -183,12 +184,16 @@ public class SOS implements CPU.TrapHandler
 		// Deal with TRAP
 		m_CPU.registerTrapHandler(this);
 		m_freeList = new Vector<MemBlock>();
+		
 		initPageTable();
-		//must calculate the size of the free memory
+		
+		//must calculate the size of the free memory not including the page table
 		int sizeOfFreeSpace = m_MMU.getSize() - m_MMU.getNumPages();
 		int startingLocation = m_MMU.getNumPages();
 		m_pageTableLim = startingLocation;
+		
 		MemBlock totalRAM = new MemBlock(startingLocation,sizeOfFreeSpace);
+		
 		m_freeList.add(totalRAM);
 	}//SOS ctor
 
@@ -264,7 +269,6 @@ public class SOS implements CPU.TrapHandler
 			return -1;
 		}
 
-		mergeFreeMemory();
 
 		//Merge All Processes into a large block at the base of RAM
 		Vector<ProcessControlBlock> procs = new Vector<ProcessControlBlock>(m_processes.values());
@@ -328,6 +332,25 @@ public class SOS implements CPU.TrapHandler
 		m_freeList.add(newFreeBlock);
 
 		//defrag the free memory
+		//Merge All Processes into a large block at the base of RAM
+		Vector<ProcessControlBlock> procs = new Vector<ProcessControlBlock>(m_processes.values());
+
+		Collections.sort(procs);
+
+		//lowest available address is the top of the page table
+		int topOfAllocdSpace = m_pageTableLim;
+		
+		for(ProcessControlBlock pcb : procs) {
+			int processSize = pcb.getRegisterValue(m_CPU.LIM) - pcb.getRegisterValue(m_CPU.BASE);
+
+			pcb.move(topOfAllocdSpace);
+			topOfAllocdSpace+=processSize;
+		}
+
+		m_freeList.clear();
+		MemBlock newFreeBlockToAdd = new MemBlock(topOfAllocdSpace,m_MMU.getSize() - topOfAllocdSpace);
+		m_freeList.add(newFreeBlockToAdd);
+		
 		mergeFreeMemory();
 	}//freeCurrProcessMemBlock
 
@@ -668,13 +691,17 @@ public class SOS implements CPU.TrapHandler
 				15, 0, 0, 0 }; //TRAP
 
 		//Initialize the starting position for this program
-		int nextLoadPos = allocBlock(progArr.length + 20);
-		if(nextLoadPos == -1) {
+		int numPages = (16 / m_MMU.getPageSize()) + 1;
+		int allocSize = numPages * m_MMU.getPageSize();
+				
+		int block = allocBlock(allocSize);
+		
+		if(block == -1) {
 			System.out.println("Unable to locate memory block for Idle Process.");
 			System.exit(-1);
 		}
 
-		int baseAddr = nextLoadPos;
+		int baseAddr = block;
 
 		//Load the program into RAM
 		for(int i = 0; i < progArr.length; i++)
@@ -742,14 +769,7 @@ public class SOS implements CPU.TrapHandler
 
 		//convert allocSize to be a multiple of page size
 		int sizeToAlloc = 0;
-		int numPagesNeeded=0;
-		double numPagesRequired = allocSize/m_MMU.getPageSize();
-		numPagesNeeded = (int)numPagesRequired;
-		
-		if(numPagesRequired % 1 != 0) {
-			// need to go up one more page
-			numPagesNeeded++;
-		}
+		int numPagesNeeded=(allocSize / m_MMU.getPageSize()) + 1;
 		
 		sizeToAlloc = numPagesNeeded * m_MMU.getPageSize();
 		
@@ -760,7 +780,7 @@ public class SOS implements CPU.TrapHandler
 			//report the error via System.out.println and return to the caller without installing
 			//DO NOT HALT THE SIMULATION
 			System.out.println("Unable to locate a block of memory for the new process.");
-
+			printPageTable();
 			return;
 		}
 
@@ -778,6 +798,7 @@ public class SOS implements CPU.TrapHandler
 		if(m_CPU.getLIM() >= m_MMU.getSize())
 		{
 			System.out.println("Error: Program too large. Please allocate more memory. ");
+			printPageTable();
 			System.exit(0);
 		}
 

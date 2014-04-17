@@ -297,19 +297,32 @@ public class MMU
 
 
     /**
-     * TODO: ADD METHOD HEADER
-     * @param virtAddr
-     * @return
+     * translate()
+     * 
+     * Convert a virtual address in memory to an actual physical memory 
+     * location using the page table
+     * 
+     * @param virtAddr - Virtual Address to convert
+     * @return Physical Address
      */
     private int translate(int virtAddr)
     {
+    	//find the page number by masking off the offset and shifting the
+    	//result the size of the offset  
         int pageNumber = (virtAddr & m_pageMask) >>> m_offsetSize;
+        
+        //find the offset by masking off the page number
     	int offset = virtAddr & m_offsetMask;
     	
+    	//read the frame number from the page table
     	int frameNumber = m_RAM.read(pageNumber);
     	
+    	//shift the frame number to the left in order to make room for the offset
     	frameNumber = frameNumber << m_offsetSize;
+    	
+    	//combine the frame number and the offset using -OR-
     	int physical = (frameNumber | offset);
+    	
     	
     	return physical;
     }//translate
